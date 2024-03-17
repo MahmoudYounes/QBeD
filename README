@@ -1,0 +1,10 @@
+# overview
+QBeD (pronounced Q-bed) is a linux based distrubition. This distrbution is based on linux from scratch (LFS) and beyond linux from scratch (BLFS). most of the 
+scripts existing in this repository are taken directly from the book.
+
+# why?
+* documenting how to create a linux distribution
+* creating a tailored distribution(s) for my need
+* automating the process of distribution creation
+
+
