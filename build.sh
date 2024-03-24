@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # this scripts builds a linux based distribution called QBeD. it's based on LFS.
+# TODO: split the script into methods
 
 . common.sh
 
@@ -84,14 +85,17 @@ pushd $LFS/sources
 # BINUTILS
 tar xvf binutils-2.40.tar.xz
 pushd binutils-2.40
+
 mkdir -v build
 pushd build
+
 ../configure --prefix=$LFS/tools \
              --with-sysroot=$LFS \
              --target=$LFS_TGT   \
              --disable-nls       \
              --enable-gprofng=no \
              --disable-werror
+
 make -j $(nproc)
 make install
 
@@ -194,3 +198,603 @@ echo "rootsbindir=/usr/sbin" > configparms
 
 make
 make DESTDIR=$LFS install
+sed '/RTLDLIST=/s@/usr@@g' -i $LFS/usr/bin/ldd
+
+echo 'int main(){}' | $LFS_TGT-gcc -xc -
+sanitycheck=$(readelf -l a.out | grep ld-linux)
+if [ -z $sanitycheck ]; then
+    bail "compilation failure. something broke after glibc compilation step."
+fi
+
+rm -v a.out
+
+popd # glibc
+popd # sources
+
+# LIBSTDC++
+pushd gcc-13.1.0
+mv build buildgcc
+
+mkdir -v build
+pushd build
+
+../libstdc++-v3/configure                                        \
+    --host=$LFS_TGT                                              \
+    --build=$(../config.guess)                                   \
+    --prefix=/usr                                                \
+    --disable-multilib                                           \
+    --disable-nls                                                \
+    --disable-libstdcxx-pch                                      \
+    --with-gxx-include-dir=/tools/$LFS_TGT/include/c++/13.1.0
+make
+make DESTDIR=$LFS install
+popd # gcc
+popd # sources
+
+echo "done building the tool chain to build QBeD"
+echo "cross compiling temporary tools"
+
+# M4
+tar xvf m4-1.4.19.tar.xz
+pushd m4-1.4.19
+
+./configure --prefix=/usr          \
+--host=$LFS_TGT                    \
+--build=$(build-aux/config.guess)
+
+make
+make DESTDIR=$LFS install
+popd # sources
+
+tar xvf ncurses-6.4.tar.gz
+pushd ncurses-6.4
+
+sed -i s/mawk// configure
+
+mkdir build
+pushd build
+
+../configure
+
+make -C include
+make -C progs tic
+
+popd # ncurses
+
+./configure --prefix=/usr                 \
+            --host=$LFS_TGT               \
+            --build=$(./config.guess)     \
+            --mandir=/usr/share/man       \
+            --with-manpage-format=normal  \
+            --with-shared                 \
+            --without-normal              \
+            --with-cxx-shared             \
+            --without-debug               \
+            --without-ada                 \
+            --disable-stripping           \
+            --enable-widec
+
+make
+make DESTDIR=$LFS TIC_PATH=$(pwd)/build/progs/tic install
+echo "INPUT(-lncursesw)" > $LFS/usr/lib/libncurses.so
+popd # sources
+
+# BASH
+tar xvf bash-5.2.15.tar.gz
+pushd bash-5.2.15
+
+./configure --prefix=/usr              \
+    --build=$(sh support/config.guess) \
+    --host=$LFS_TGT                    \
+    --without-bash-malloc
+
+make
+make DESTDIR=$LFS install
+
+ln -sv bash $LFS/bin/sh
+
+popd # sources
+
+# Coreutils
+tar xvf coreutils-9.3.tar.xz
+pushd coreutils-9.3
+
+./configure --prefix=/usr                   \
+    --host=$LFS_TGT                         \
+    --build=$(build-aux/config.guess)       \
+    --enable-install-program=hostname       \
+    --enable-no-install-program=kill,uptime \
+    gl_cv_macro_MB_CUR_MAX_good=y
+
+make
+make DESTDIR=$LFS install
+
+mv -v $LFS/usr/bin/chroot $LFS/usr/sbin
+mkdir -pv $LFS/usr/share/man/man8
+mv -v $LFS/usr/share/man/man1/chroot.1 $LFS/usr/share/man/man8/chroot.8
+sed -i 's/"1"/"8"/' $LFS/usr/share/man/man8/chroot.8
+
+popd  # sources
+
+# Diffutils
+
+tar xvf diffutils-3.10.tar.xz
+pushd diffutils-3.10
+
+./configure --prefix=/usr --host=$LFS_TGT
+
+make
+make DESTDIR=$LFS install
+popd
+
+# File
+
+tar xvf file-5.44.tar.gz
+pushd file-5.44
+
+mkdir build
+pushd build
+../configure --disable-bzlib       \
+             --disable-libseccomp  \
+             --disable-xzlib       \
+             --disable-zlib
+
+make
+popd  # file
+
+./configure --prefix=/usr --host=$LFS_TGT --build=$(./config.guess)
+
+make FILE_COMPILE=$(pwd)/build/src/file
+
+make DESTDIR=$LFS install
+
+rm -v $LFS/usr/lib/libmagic.la
+popd # sources
+
+# Findutils
+
+tar xvf findutils-4.9.0.tar.xz
+pushd findutils-4.9.0
+
+./configure --prefix=/usr           \
+    --localstatedir=/var/lib/locate \
+    --host=$LFS_TGT                 \
+    --build=$(build-aux/config.guess)
+
+make
+make DESTDIR=$LFS install
+
+popd # sources
+
+# GAWK
+tar xvf gawk-5.2.2.tar.xz
+pushd gawk-5.2.2
+
+sed -i 's/extras//' Makefile.in
+./configure --prefix=/usr       \
+            --host=$LFS_TGT     \
+            --build=$(build-aux/config.guess)
+
+make
+make DESTDIR=$LFS install
+popd # sources
+
+# Grep
+
+tar xvf grep-3.11.tar.xz
+pushd grep-3.11
+
+./configure --prefix=/usr --host=$LFS_TGT
+
+make
+make DESTDIR=$LFS install
+
+popd # sources
+
+# Gzip
+tar xvf gzip-1.12.tar.xz
+pushd gzip-1.12
+
+./configure --prefix=/usr --host=$LFS_TGT
+
+make
+make DESTDIR=$LFS install
+
+popd # sources
+
+# Make
+tar xvf make-4.4.1.tar.gz
+pushd make-4.4.1
+
+./configure --prefix=/usr                       \
+            --without-guile                     \
+            --host=$LFS_TGT                     \
+            --build=$(build-aux/config.guess)
+
+make
+make DESTDIR=$LFS install
+
+popd # sources
+
+# Patch
+tar xvf patch-2.7.6.tar.xz
+pushd patch-2.7.6
+
+./configure --prefix=/usr                     \
+            --host=$LFS_TGT                   \
+            --build=$(build-aux/config.guess)
+
+make
+make DESTDIR=$LFS install
+
+popd #sources
+
+# Sed
+tar xvf sed-4.9.tar.xz
+pushd sed-4.9
+
+./configure --prefix=/usr --host=$LFS_TGT
+
+make
+make DESTDIR=$LFS install
+
+popd # sources
+
+# Tar
+
+tar xvf tar-1.34.tar.xz
+pushd tar-1.34
+
+./configure --prefix=/usr                        \
+            --host=$LFS_TGT                      \
+            --build=$(build-aux/config.guess)
+
+make
+make DESTDIR=$LFS install
+
+popd # sources
+
+# Xz
+
+tar xvf xz-5.4.3.tar.xz
+pushd xz-5.4.3
+
+./configure --prefix=/usr                        \
+            --host=$LFS_TGT                      \
+            --build=$(build-aux/config.guess)    \
+            --disable-static                     \
+            --docdir=/usr/share/doc/xz-5.4.3
+
+make
+make DESTDIR=$LFS install
+
+rm -v $LFS/usr/lib/liblzma.la
+
+popd # sources
+
+# Binutils -- the first time we built binutils we built it with host gcc to be able
+# to build target gcc. this time we are using target gcc to build target binutils
+
+if [ -d binutils-2.40 ]; then rm -rfv binutils-2.40; fi
+
+tar xvf binutils-2.40.tar.xz
+pushd binutils-2.40
+
+sed '6009s/$add_dir//' -i ltmain.sh
+
+mkdir -v build
+pushd build
+
+../configure                    \
+    --prefix=/usr               \
+    --build=$(../config.guess)  \
+    --host=$LFS_TGT             \
+    --disable-nls               \
+    --enable-shared             \
+    --enable-gprofng=no         \
+    --disable-werror            \
+    --enable-64-bit-bfd
+
+make
+make DESTDIR=$LFS install
+
+rm -v $LFS/usr/lib/lib{bfd,ctf,ctf-nobfd,opcodes}.{a,la}
+popd # binutils
+popd # sources
+
+# Gcc
+if [ -d gcc-13.1.0 ];then rm -rfv gcc-13.1.0;fi
+
+tar xvf gcc-13.1.0.tar.xz
+pushd gcc-13.1.0
+
+tar xvf ../mpfr-4.2.0.tar.xz
+mv -v mpfr-4.2.0 mpfr
+tar xvf ../gmp-6.2.1.tar.xz
+mv -v gmp-6.2.1 gmp
+tar xvf ../mpc-1.3.1.tar.gz
+mv -v mpc-1.3.1 mpc
+
+case $(uname -m) in
+    x86_64)
+        sed -e '/m64=/s/lib64/lib/' -i.orig gcc/config/i386/t-linux64
+        ;;
+esac
+
+sed '/thread_header =/s/@.*@/gthr-posix.h/' \
+    -i libgcc/Makefile.in libstdc++-v3/include/Makefile.in
+
+mkdir -v build
+pushd build
+
+../configure                                            \
+            --build=$(../config.guess)                  \
+            --host=$LFS_TGT                             \
+            --target=$LFS_TGT                           \
+            LDFLAGS_FOR_TARGET=-L$PWD/$LFS_TGT/libgcc   \
+            --prefix=/usr                               \
+            --with-build-sysroot=$LFS                   \
+            --enable-default-pie                        \
+            --enable-default-ssp                        \
+            --disable-nls                               \
+            --disable-multilib                          \
+            --disable-libatomic                         \
+            --disable-libgomp                           \
+            --disable-libquadmath                       \
+            --disable-libssp                            \
+            --disable-libvtv                            \
+            --enable-languages=c,c++
+
+make
+make DESTDIR=$LFS install
+
+ln -sv gcc $LFS/usr/bin/cc
+
+popd # gcc
+popd # sources
+
+# exit to root
+exit
+
+if [ -z $LFS ]; then export LFS=/mnt/qbed;fi
+
+chown -R root:root $LFS/{usr,lib,var,etc,bin,sbin,tools}
+case $(uname -m) in
+    x86_64)
+        chown -R root:root $LFS/lib64
+        ;;
+esac
+
+mkdir -pv $LFS/{dev,proc,sys,run}
+
+# bind mounting /dev devtmpfs
+mount -v --bind /dev $LFS/dev
+
+# bind mount pesudo terminal vfs
+mount -v --bind /dev/pts $LFS/dev/pts
+
+# mount procfs
+mount -vt proc proc $LFS/proc
+
+# mount sysfs
+mount -vt sysfs sysfs $LFS/sys
+
+# mount tmpfs
+mount -vt tmpfs tmpfs $LFS/run
+
+if [ -h $LFS/dev/shm ]; then
+    mkdir -pv $LFS/$(readlink $LFS/dev/shm)
+else
+    mount -t tmpfs -o nosuid,nodev tmpfs $LFS/dev/shm
+fi
+
+if [ ! -a $LFS/lib/ld-linux-x86-64.so.2 ]; then
+    cp sources/glibc-2.37/build/elf/ld-linux-x86-64.so.2 lib/
+fi
+
+chroot "$LFS" /usr/bin/env -i HOME=/root TERM="$TERM" PS1='(lfs chroot) \u:\w\$ ' PATH=/usr/bin:/usr/sbin /bin/bash --login
+
+mkdir -pv /{boot,home,mnt,opt,srv}
+mkdir -pv /etc/{opt,sysconfig}
+mkdir -pv /lib/firmware
+mkdir -pv /media/{floppy,cdrom}
+mkdir -pv /usr/{,local/}{include,src}
+mkdir -pv /usr/local/{bin,lib,sbin}
+mkdir -pv /usr/{,local/}share/{color,dict,doc,info,locale,man}
+mkdir -pv /usr/{,local/}share/{misc,terminfo,zoneinfo}
+mkdir -pv /usr/{,local/}share/man/man{1..8}
+mkdir -pv /var/{cache,local,log,mail,opt,spool}
+mkdir -pv /var/lib/{color,misc,locate}
+ln -sfv /run /var/run
+ln -sfv /run/lock /var/lock
+install -dv -m 0750 /root
+install -dv -m 1777 /tmp /var/tmp
+# ============================================
+
+ln -sv /proc/self/mounts /etc/mtab
+
+cat > /etc/hosts << EOF
+127.0.0.1 localhost $(hostname)
+::1
+localhost
+EOF
+
+cat > /etc/passwd << "EOF"
+root:x:0:0:root:/root:/bin/bash
+bin:x:1:1:bin:/dev/null:/usr/bin/false
+daemon:x:6:6:Daemon User:/dev/null:/usr/bin/false
+messagebus:x:18:18:D-Bus Message Daemon User:/run/dbus:/usr/bin/false
+systemd-journal-gateway:x:73:73:systemd Journal Gateway:/:/usr/bin/false
+systemd-journal-remote:x:74:74:systemd Journal Remote:/:/usr/bin/false
+systemd-journal-upload:x:75:75:systemd Journal Upload:/:/usr/bin/false
+systemd-network:x:76:76:systemd Network Management:/:/usr/bin/false
+systemd-resolve:x:77:77:systemd Resolver:/:/usr/bin/false
+systemd-timesync:x:78:78:systemd Time Synchronization:/:/usr/bin/false
+systemd-coredump:x:79:79:systemd Core Dumper:/:/usr/bin/false
+uuidd:x:80:80:UUID Generation Daemon User:/dev/null:/usr/bin/false
+systemd-oom:x:81:81:systemd Out Of Memory Daemon:/:/usr/bin/false
+nobody:x:65534:65534:Unprivileged User:/dev/null:/usr/bin/false
+EOF
+
+cat > /etc/group << "EOF"
+root:x:0:
+bin:x:1:daemon
+sys:x:2:
+kmem:x:3:
+tape:x:4:
+tty:x:5:
+daemon:x:6:
+floppy:x:7:
+disk:x:8:
+lp:x:9:
+dialout:x:10:
+audio:x:11:
+video:x:12:
+utmp:x:13:
+usb:x:14:
+cdrom:x:15:
+adm:x:16:
+messagebus:x:18:
+systemd-journal:x:23:
+input:x:24:
+mail:x:34:
+kvm:x:61:
+systemd-journal-gateway:x:73:
+systemd-journal-remote:x:74:
+systemd-journal-upload:x:75:
+systemd-network:x:76:
+systemd-resolve:x:77:
+systemd-timesync:x:78:
+systemd-coredump:x:79:
+uuidd:x:80:
+systemd-oom:x:81:
+wheel:x:97:
+users:x:999:
+nogroup:x:65534:
+EOF
+
+echo "tester:x:101:101::/home/tester:/bin/bash" >> /etc/passwd
+echo "tester:x:101:" >> /etc/group
+install -o tester -d /home/tester
+
+exec /usr/bin/bash --login
+
+touch /var/log/{btmp,lastlog,faillog,wtmp}
+chgrp -v utmp /var/log/lastlog
+chmod -v 664 /var/log/lastlog
+chmod -v 600 /var/log/btmp
+
+# compiling the rest of the packages
+
+cd /sources
+
+# Gettext
+tar xvf gettext-0.21.1.tar.xz
+pushd gettext-0.21.1
+
+./configure --disable-shared
+
+make
+
+cp -v gettext-tools/src/{msgfmt,msgmerge,xgettext} /usr/bin
+
+popd  # sources
+
+# Bison
+tar xvf bison-3.8.2.tar.xz
+pushd bison-3.8.2
+
+./configure --prefix=/usr --docdir=/usr/share/doc/bison-3.8.2
+
+make
+make install
+popd # sources
+
+# Perl
+tar xvf perl-5.36.1.tar.xz
+pushd perl-5.36.1
+
+sh Configure -des                                           \
+             -Dprefix=/usr                                  \
+             -Dvendorprefix=/usr                            \
+             -Duseshrplib                                   \
+             -Dprivlib=/usr/lib/perl5/5.36/core_perl        \
+             -Darchlib=/usr/lib/perl5/5.36/core_perl        \
+             -Dsitelib=/usr/lib/perl5/5.36/site_perl        \
+             -Dsitearch=/usr/lib/perl5/5.36/site_perl       \
+             -Dvendorlib=/usr/lib/perl5/5.36/vendor_perl    \
+             -Dvendorarch=/usr/lib/perl5/5.36/vendor_perl
+make
+make install
+
+popd # sources
+
+# Python
+tar xvf Python-3.11.4.tar.xz
+pushd Python-3.11.4
+
+./configure --prefix=/usr       \
+            --enable-shared     \
+            --without-ensurepip
+
+make
+make install
+popd # sources
+
+# Texinfo
+
+tar xvf texinfo-7.0.3.tar.xz
+pushd texinfo-7.0.3
+
+./configure --prefix=/usr
+
+make
+make install
+
+popd # sources
+
+# Util-linux
+
+tar xvf util-linux-2.39.tar.xz
+pushd util-linux-2.39
+
+mkdir -pv /var/lib/hwclock
+./configure ADJTIME_PATH=/var/lib/hwclock/adjtime\
+    --libdir=/usr/lib \
+    --runstatedir=/run \
+    --docdir=/usr/share/doc/util-linux-2.39 \
+    --disable-chfn-chsh \
+    --disable-login \
+    --disable-nologin   \
+    --disable-su    \
+    --disable-setpriv   \
+    --disable-runuser   \
+    --disable-pylibmount \
+    --disable-static    \
+    --without-python
+
+make
+make install
+popd # sources
+
+cd ..
+
+# remove docs
+rm -rf /usr/share/{info,man,doc}/*
+
+find /usr/{lib,libexec} -name \*.la -delete
+
+rm -rf /tools
+
+# create backup
+
+# exit back to root
+exit
+
+# unmount vfs
+mountpoint -q $LFS/dev/shm && umount $LFS/dev/shm
+umount $LFS/dev/pts
+umount $LFS/{sys,proc,run,dev}
+
+cd $LFS
+tar -cJpf $HOME/lfs-temp-tools-d7cb883f5f4bdb5497baa2562652c11f2d805ac7-systemd.tar.xz .
