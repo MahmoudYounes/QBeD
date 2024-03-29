@@ -594,6 +594,7 @@ fi
 
 chroot "$LFS" /usr/bin/env -i HOME=/root TERM="$TERM" PS1='(lfs chroot) \u:\w\$ ' PATH=/usr/bin:/usr/sbin /bin/bash --login
 
+# Create the system filesystem
 mkdir -pv /{boot,home,mnt,opt,srv}
 mkdir -pv /etc/{opt,sysconfig}
 mkdir -pv /lib/firmware
@@ -798,3 +799,203 @@ umount $LFS/{sys,proc,run,dev}
 
 cd $LFS
 tar -cJpf $HOME/lfs-temp-tools-d7cb883f5f4bdb5497baa2562652c11f2d805ac7-systemd.tar.xz .
+
+#chroot again
+chroot "$LFS" /usr/bin/env -i HOME=/root TERM="$TERM" PS1='(lfs chroot) \u:\w\$ ' PATH=/usr/bin:/usr/sbin /bin/bash --login
+
+# man-pages
+tar xvf man-pages-6.04.tar.xz
+pushd man-pages-6.04
+
+make prefix=/usr install
+
+popd
+
+# Iana-Etc
+
+tar xvf iana-etc-20230524.tar.gz
+pushd iana-etc-20230524
+
+cp services protocols /etc
+
+popd
+
+# Glibc 3rd time.. which should be a sharm
+
+if [ -d glibc-2.37 ]; then
+    rm -rf glibc-2.37
+fi
+
+tar xvf glibc-2.37.tar.xz
+pushd glibc-2.37
+
+# this patch is used becuase some programs use the non-FHS compilant /var/db to store runtime data
+# this patch makes them store this data in a compilant FHS way. FHS: filesystem hierarchy standard. google it!
+patch -Np1 -i ../glibc-2.37-fhs-1.patch
+
+# fix a buf overflow sec vuln in vfprintf
+sed '/width -=/s/workend - string/number_length/' -i stdio-common/vfprintf-process-arg.c
+
+mkdir -v build
+pushd build
+
+# FIXME: in case something goes wrong the output file in the book is called configparms - missing an a before last m.
+echo "rootsbindir=/usr/sbin" > configparams
+
+../configure --prefix=/usr          \
+    --disable-werror                \
+    --enable-kernel=6.1.30          \
+    --enable-stack-protector=strong \
+    --with-headers=/usr/include     \
+    libc_cv_slibdir=/usr/lib
+
+make
+make check
+
+touch /etc/ld.so.conf
+
+sed '/test-installation/s@$(PERL)@echo not running@' -i ../Makefile
+
+make install
+
+sed '/RTLDLIST=/s@/usr@@g' -i /usr/bin/ldd
+
+cp -v ../nscd/nscd.conf /etc/nscd.conf
+mkdir -pv /var/cache/nscd
+
+install -v -Dm644 ../nscd/nscd.tmpfiles /usr/lib/tmpfiles.d/nscd.conf
+install -v -Dm644 ../nscd/nscd.service /usr/lib/systemd/system/nscd.service
+
+# install locales to get optimal test coverage
+make localedata/install-locales
+localedef -i POSIX -f UTF-8 C.UTF-8 2> /dev/null || true
+localedef -i ja_JP -f SHIFT_JIS ja_JP.SJIS 2> /dev/null || true
+
+# create /etc/nsswitch.conf becuase glibc defaults don't work well in  networked environment
+cat > /etc/nsswitch.conf << "EOF"
+# Begin /etc/nsswitch.conf
+passwd: files
+group: files
+shadow: files
+hosts: files dns
+networks: files
+protocols: files
+services: files
+ethers: files
+rpc: files
+# End /etc/nsswitch.conf
+EOF
+
+# adding timezone data
+tar xvf ../../tzdata2023c.tar.gz
+
+ZONEINFO=/usr/share/zoneinfo
+mkdir -pv $ZONEINFO/{posix,right}
+for tz in etcetera southamerica northamerica europe africa antarctica asia australasia backward; do
+    zic -L /dev/null -d $ZONEINFO ${tz}
+    zic -L /dev/null -d $ZONEINFO/posix ${tz}
+    zic -L leapseconds -d $ZONEINFO/right ${tz}
+done
+
+cp -v zone.tab zone1970.tab iso3166.tab $ZONEINFO
+zic -d $ZONEINFO -p Europe/Copenhagen
+unset ZONEINFO
+
+# linking the local timezone. documenting I was in denmark at the time :)
+ln -sfv /usr/share/zoneinfo/Europe/Berlin /etc/localtime
+
+# these two directories are know to be needed by the dynamic loader ld-linux.so
+# by default loader searches /usr/lib. other locations need to be added to /etc/ld.so.conf file
+cat > /etc/ld.so.conf << "EOF"
+# Begin /etc/ld.so.conf
+/usr/local/lib
+/opt/lib
+EOF
+
+# let's add also a directory capbility to the ld loader
+cat >> /etc/ld.so.conf << "EOF"
+# Add an include directory
+include /etc/ld.so.conf.d/*.conf
+EOF
+mkdir -pv /etc/ld.so.conf.d
+
+popd # glibc
+popd # sources
+
+# zlib -- [de]compression
+tar xvf zlib-1.2.13.tar.gz
+
+pushd zlib-1.2.13
+
+./configure --prefix=/usr
+
+make
+make check
+make install
+
+rm -fv /usr/lib/libz.a
+
+popd # sources
+
+# bzip2 -- compression and decompression of bzip2 alg
+tar xvf bzip2-1.0.8.tar.gz
+
+pushd bzip2-1.0.8
+
+# patch that installs the documentation for this package
+patch -Np1 -i ../bzip2-1.0.8-install_docs-1.patch
+
+# ensure symlinks are relative
+sed -i 's@\(ln -s -f \)$(PREFIX)/bin/@\1@' Makefile
+
+# ensures man pages are installed correctly
+sed -i "s@(PREFIX)/man@(PREFIX)/share/man@g" Makefile
+
+# cause bzip2 to be built using different Makefile that creates dynamic libbz2.so and links bzip2 utils against it
+make -f Makefile-libbz2_so
+make clean
+make
+make PREFIX=/usr install
+
+# install shared libraries
+cp -av libbz2.so.* /usr/lib
+ln -sv libbz2.so.1.0.8 /usr/lib/libbz2.so
+
+# install shared bzip2 binary to /usr/bin. replace two copies of bzip2 with symlinks
+cp -v bzip2-shared /usr/bin/bzip2
+for i in /usr/bin/{bzcat,bunzip2}; do
+    ln -sfv bzip2 $i
+done
+
+# remove useless static libraries
+rm -fv /usr/lib/libbz2.a
+
+popd # sources
+
+# XZ -- compressing and decompressing with the xz algo.
+if [ -d xz-5.4.3 ]; then
+    rm -rf xz-5.4.3
+fi
+
+tar xvf xz-5.4.3.tar.xz
+pushd xz-5.4.3
+
+./configure --prefix=/usr --disable-static --docdir=/usr/share/doc/xz-5.4.3
+make
+make check
+make install
+
+popd #sources
+
+# zstd -- another compression algorithm support library
+tar xvf zstd-1.5.5.tar.gz
+pushd zstd-1.5.5
+
+make prefix=/usr
+make check
+make prefix=/usr install
+
+# remove static library
+rm -v /usr/lib/libzstd.a
+
+popd # sources
